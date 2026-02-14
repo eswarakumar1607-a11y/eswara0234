@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ThermoAnalyzer Pro | Secure Intelligence Suite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, signOut } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        window.fb = { initializeApp, getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, signOut, getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, addDoc, serverTimestamp };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+        :root { --brand-primary: #6366f1; --brand-secondary: #ec4899; --bg-dark: #030712; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: #f1f5f9; overflow: hidden; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .glass { background: rgba(17, 24, 39, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        .input-field { background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(99, 102, 241, 0.2); transition: all 0.3s ease; }
+        .input-field:focus { border-color: var(--brand-secondary); box-shadow: 0 0 15px rgba(236, 72, 153, 0.3); outline: none; }
+        .btn-execute { background: linear-gradient(135deg, #6366f1 0%, #ec4899 100%); transition: all 0.3s ease; }
+        .ai-glow { box-shadow: 0 0 20px rgba(168, 85, 247, 0.3); border: 1px solid rgba(168, 85, 247, 0.5); }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        
+        @keyframes sparkle {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.05); }
+        }
+        .ai-button-glow { animation: sparkle 3s infinite; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const { initializeApp, getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, signOut, getFirestore, collection, doc, setDoc, getDoc, onSnapshot, query, addDoc, serverTimestamp } = window.fb;
+
+        /**
+         * VS CODE COMPATIBILITY NOTICE:
+         * To run this locally, you must provide your own Firebase config or use the fallbacks below.
+         * The __firebase_config variable is injected by the preview environment.
+         */
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : {
+                apiKey: "YOUR_API_KEY",
+                authDomain: "YOUR_PROJECT.firebaseapp.com",
+                projectId: "YOUR_PROJECT_ID",
+                storageBucket: "YOUR_PROJECT.appspot.com",
+                messagingSenderId: "YOUR_ID",
+                appId: "YOUR_APP_ID"
+            };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'thermo-analyzer-pro';
+        
+        // --- Gemini API Configuration ---
+        // Insert your Gemini API Key here for local testing
+        const apiKey = "";
+        
+        const callGemini = async (prompt, systemInstruction = "You are a senior thermodynamics engineer.") => {
+            if (!apiKey) return "⚠️ Gemini API Key is missing. Add it to the code to enable AI features.";
+            
+            const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: { parts: [{ text: systemInstruction }] }
+            };
+
+            const delays = [1000, 2000, 4000, 8000, 16000];
+            for (let i = 0; i < delays.length; i++) {
+                try {
+                    const res = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis engine returned no data.";
+                } catch (e) {
+                    if (i === delays.length - 1) return "The ✨ AI Engine is currently under heavy load. Please try again in a moment.";
+                    await new Promise(r => setTimeout(r, delays[i]));
+                }
+            }
+        };
+
+        const AIR = { R: 0.287, Cp: 1.005, Cv: 0.718, Gamma: 1.4 };
+
+        const Engines = {
+            otto: (r, T1, P1, T3) => {
+                const T2 = T1 * Math.pow(r, AIR.Gamma - 1);
+                const P2 = P1 * Math.pow(r, AIR.Gamma);
+                const V1 = (AIR.R * T1) / P1;
+                const V2 = V1 / r;
+                const P3 = P2 * (T3 / T2);
+                const T4 = T3 / Math.pow(r, AIR.Gamma - 1);
+                const P4 = P3 / Math.pow(r, AIR.Gamma);
+                const Qin = AIR.Cv * (T3 - T2);
+                const Qout = AIR.Cv * (T4 - T1);
+                const Wnet = Qin - Qout;
+                const path = [];
+                for (let i = 0; i <= 20; i++) {
+                    const v = V1 - (i/20)*(V1-V2);
+                    path.push({ x: v, y: P1 * Math.pow(V1/v, AIR.Gamma) });
+                }
+                path.push({ x: V2, y: P3 });
+                for (let i = 0; i <= 20; i++) {
+                    const v = V2 + (i/20)*(V1-V2);
+                    path.push({ x: v, y: P3 * Math.pow(V2/v, AIR.Gamma) });
+                }
+                path.push({ x: V1, y: P1 });
+                return { efficiency: (Wnet / Qin) * 100, Wnet, Qin, path, states: [{id: 1, T: T1, P: P1, V: V1}, {id: 2, T: T2, P: P2, V: V2}, {id: 3, T: T3, P: P3, V: V2}, {id: 4, T: T4, P: P4, V: V1}] };
+            },
+            rankine: (pLow, pHigh, tHigh) => {
+                const wPump = 0.001 * (pHigh - pLow);
+                const h1 = 191.8;
+                const h2 = h1 + wPump;
+                const h3 = 3400; 
+                const h4 = 2300; 
+                const qIn = h3 - h2;
+                const wNet = (h3 - h4) - wPump;
+                return { efficiency: (wNet / qIn) * 100, Wnet: wNet, Qin: qIn };
+            },
+            hx: (th1, th2, tc1, tc2, flowH) => {
+                const Q = flowH * 4.18 * (th1 - th2);
+                const dt1 = th1 - tc2;
+                const dt2 = th2 - tc1;
+                const lmtd = (dt1 - dt2) / Math.log(dt1 / dt2);
+                return { Q, lmtd, effectiveness: ((th1 - th2) / (th1 - tc1)) * 100 };
+            },
+            refrigeration: (pEvap, pCond, tSuction) => {
+                const h1 = 400; const h2 = 440; const h3 = 250; const h4 = h3;
+                const re = h1 - h4;
+                const wc = h2 - h1;
+                return { cop: re / wc, work: wc, effect: re };
+            },
+            conduction: (k, l, a, t1, t2) => {
+                const r = l / (k * a);
+                const flux = (t1 - t2) / r;
+                return { flux, resistance: r };
+            }
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [userRole, setUserRole] = useState('user');
+            const [view, setView] = useState('analyzer');
+            const [activeTab, setActiveTab] = useState('otto');
+            const [inputs, setInputs] = useState({
+                otto: { r: 8, t1: 300, p1: 101, t3: 1500 },
+                rankine: { pLow: 10, pHigh: 5000, tHigh: 500 },
+                hx: { th1: 90, th2: 60, tc1: 20, tc2: 40, flowH: 2 },
+                refrigeration: { pEvap: 200, pCond: 1200, tSuction: 280 },
+                conduction: { k: 0.5, l: 0.2, a: 10, t1: 100, t2: 25 }
+            });
+            const [results, setResults] = useState(null);
+            const [globalLogs, setGlobalLogs] = useState([]);
+            const [aiText, setAiText] = useState("");
+            const [aiLoading, setAiLoading] = useState(false);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (e) {
+                        console.warn("Firebase Auth bypassed or failed. Logs will not work locally without a valid config.", e);
+                        setUser({ uid: "LOCAL_USER" });
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, async (u) => {
+                    if (u) {
+                        setUser(u);
+                        try {
+                            const profileRef = doc(db, 'artifacts', appId, 'users', u.uid, 'settings', 'profile');
+                            const profileSnap = await getDoc(profileRef);
+                            if (profileSnap.exists()) setUserRole(profileSnap.data().role || 'user');
+                            else await setDoc(profileRef, { uid: u.uid, role: 'user', joined: serverTimestamp() });
+                        } catch (e) { console.error("Firestore Profile skip", e); }
+                    }
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            useEffect(() => {
+                if (!user || userRole !== 'admin') return;
+                try {
+                    const logsCol = collection(db, 'artifacts', appId, 'public', 'data', 'calculations');
+                    return onSnapshot(logsCol, (snap) => {
+                        const logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        setGlobalLogs(logs.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0)));
+                    });
+                } catch (e) { console.error("Firestore Logs skip", e); }
+            }, [user, userRole]);
+
+            const runAnalysis = async () => {
+                const d = inputs[activeTab];
+                let res;
+                if(activeTab === 'otto') res = Engines.otto(d.r, d.t1, d.p1, d.t3);
+                else if(activeTab === 'rankine') res = Engines.rankine(d.pLow, d.pHigh, d.tHigh);
+                else if(activeTab === 'hx') res = Engines.hx(d.th1, d.th2, d.tc1, d.tc2, d.flowH);
+                else if(activeTab === 'refrigeration') res = Engines.refrigeration(d.pEvap, d.pCond, d.tSuction);
+                else if(activeTab === 'conduction') res = Engines.conduction(d.k, d.l, d.a, d.t1, d.t2);
+                
+                setResults(res);
+                setAiText(""); 
+
+                if (user && user.uid !== "LOCAL_USER") {
+                    try {
+                        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'calculations'), {
+                            uid: user.uid, module: activeTab, efficiency: res.efficiency || res.cop || 0,
+                            timestamp: serverTimestamp(), inputs: d
+                        });
+                    } catch (e) { console.error("Logging failed", e); }
+                }
+            };
+
+            const triggerAIAction = async (actionType) => {
+                if (!results) return;
+                setAiLoading(true);
+                let prompt = "";
+                
+                switch(actionType) {
+                    case 'optimize':
+                        prompt = `Review these ${activeTab} cycle inputs: ${JSON.stringify(inputs[activeTab])} and results: ${JSON.stringify(results)}. Suggest 3 specific parameter adjustments to improve thermal efficiency without violating thermodynamic laws.`;
+                        break;
+                    case 'analyze_graph':
+                        prompt = `Based on the state points of this ${activeTab} cycle: ${JSON.stringify(results.states)}, describe the physical implications of the P-V diagram shape. Is it a high-work or low-work profile? Mention specific pressure-volume relationships.`;
+                        break;
+                    case 'suggest_materials':
+                        prompt = `Given the maximum cycle temperature of ${results.states?.[2]?.T || 'high'} K and pressure of ${results.states?.[2]?.P || 'high'} kPa, suggest 3 engineering materials for the cylinder/boiler walls that offer optimal thermal resistance and structural integrity.`;
+                        break;
+                }
+
+                const insight = await callGemini(prompt);
+                setAiText(insight);
+                setAiLoading(false);
+            };
+
+            const toggleAdmin = async () => {
+                const newRole = userRole === 'admin' ? 'user' : 'admin';
+                setUserRole(newRole);
+                if (user && user.uid !== "LOCAL_USER") {
+                    try {
+                        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'profile'), { role: newRole }, { merge: true });
+                    } catch (e) { console.error("Admin toggle failed", e); }
+                }
+                setView(newRole === 'admin' ? 'admin' : 'analyzer');
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center bg-black text-indigo-500 font-black animate-pulse">BOOTING THERMO-OS...</div>;
+
+            return (
+                <div className="flex h-screen w-full bg-[#030712] text-slate-100">
+                    <aside className="w-80 flex flex-col border-r border-slate-800 bg-slate-950/80">
+                        <div className="p-8">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="p-2 bg-gradient-to-tr from-indigo-600 to-pink-500 rounded-lg"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
+                                <h1 className="text-xl font-black tracking-tighter">THERMO-PRO</h1>
+                            </div>
+                            <div className="flex justify-between items-center bg-white/5 p-2 rounded-lg border border-white/5">
+                                <span className="text-[10px] mono text-indigo-400 font-bold uppercase tracking-widest">{userRole}</span>
+                                <button onClick={toggleAdmin} className="text-[9px] text-white/40 hover:text-white transition uppercase font-bold">Override</button>
+                            </div>
+                        </div>
+
+                        <nav className="flex-1 px-4 space-y-1 overflow-y-auto no-scrollbar">
+                            <div className="text-[9px] font-black text-slate-600 mb-2 px-4 tracking-[0.3em] uppercase">Navigation</div>
+                            <NavItem active={view === 'analyzer'} onClick={() => setView('analyzer')} icon="🔬" label="Analyzer" />
+                            {userRole === 'admin' && <NavItem active={view === 'admin'} onClick={() => setView('admin')} icon="🛡️" label="Admin Logs" />}
+                            
+                            <div className="h-px bg-slate-800 my-4"></div>
+                            <div className="text-[9px] font-black text-slate-600 mb-2 px-4 tracking-[0.3em] uppercase">Modules</div>
+                            {['otto', 'rankine', 'hx', 'refrigeration', 'conduction'].map(m => (
+                                <ModuleItem key={m} active={activeTab === m} onClick={() => { setActiveTab(m); setResults(null); setAiText(""); }} label={m === 'hx' ? 'Heat Exchanger' : m.charAt(0).toUpperCase() + m.slice(1) + ' Cycle'} />
+                            ))}
+                        </nav>
+                        
+                        <div className="p-6 border-t border-slate-800/50">
+                            <div className="text-[10px] text-slate-500 font-bold mb-2 uppercase tracking-widest">Operator Identity</div>
+                            <div className="text-[10px] mono text-indigo-400 truncate bg-black/40 p-2 rounded border border-white/5">{user?.uid}</div>
+                        </div>
+                    </aside>
+
+                    <main className="flex-1 flex flex-col overflow-hidden">
+                        {view === 'analyzer' ? <AnalyzerView tab={activeTab} inputs={inputs} setInputs={setInputs} onRun={runAnalysis} results={results} aiText={aiText} aiLoading={aiLoading} triggerAI={triggerAIAction} /> : <AdminView logs={globalLogs} />}
+                    </main>
+                </div>
+            );
+        };
+
+        const NavItem = ({ active, onClick, icon, label }) => (
+            <button onClick={onClick} className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all ${active ? 'bg-indigo-500/10 text-white border-r-4 border-indigo-500' : 'text-slate-500 hover:text-slate-300'}`}>
+                <span className="text-xl">{icon}</span><span className="text-[11px] uppercase tracking-[0.2em] font-black">{label}</span>
+            </button>
+        );
+
+        const ModuleItem = ({ active, onClick, label }) => (
+            <button onClick={onClick} className={`w-full text-left px-6 py-3 rounded-xl transition-all text-[11px] uppercase font-bold tracking-widest ${active ? 'bg-white/5 text-pink-500' : 'text-slate-500 hover:bg-white/5'}`}>{label}</button>
+        );
+
+        const AnalyzerView = ({ tab, inputs, setInputs, onRun, results, aiText, aiLoading, triggerAI }) => {
+            const getMetrics = () => {
+                if (!results) return [];
+                switch (tab) {
+                    case 'otto':
+                    case 'rankine':
+                        return [
+                            { label: "Thermal Efficiency", value: results.efficiency, unit: "%", color: "text-pink-400" },
+                            { label: "Net Work Output", value: results.Wnet, unit: "kJ/kg", color: "text-indigo-400" }
+                        ];
+                    case 'hx':
+                        return [
+                            { label: "Effectiveness", value: results.effectiveness, unit: "%", color: "text-pink-400" },
+                            { label: "Heat Rate (Q)", value: results.Q, unit: "kJ", color: "text-indigo-400" }
+                        ];
+                    case 'refrigeration':
+                        return [
+                            { label: "COP", value: results.cop, unit: "", color: "text-pink-400" },
+                            { label: "Refrig. Effect", value: results.effect, unit: "kJ/kg", color: "text-indigo-400" }
+                        ];
+                    case 'conduction':
+                        return [
+                            { label: "Heat Flux", value: results.flux, unit: "W/m²", color: "text-pink-400" },
+                            { label: "Resistance", value: results.resistance, unit: "K/W", color: "text-indigo-400" }
+                        ];
+                    default: return [];
+                }
+            };
+
+            const metrics = getMetrics();
+
+            return (
+                <div className="flex-1 overflow-y-auto p-10 space-y-8 bg-gradient-to-tr from-[#020617] via-[#030712] to-[#1e1b4b]">
+                    <div className="max-w-7xl mx-auto grid grid-cols-12 gap-8">
+                        <div className="col-span-12 xl:col-span-4 space-y-6">
+                            <div className="glass rounded-[32px] p-8 border border-indigo-500/10 shadow-2xl">
+                                <h4 className="text-xs font-black uppercase text-indigo-400 mb-8 tracking-widest flex items-center gap-3">
+                                    <span className="w-1.5 h-4 bg-indigo-500 rounded-full"></span> Simulation Parameters
+                                </h4>
+                                <div className="space-y-6">
+                                    {tab === 'otto' && <>
+                                        <Input label="Comp Ratio (r)" value={inputs.otto.r} onChange={v => setInputs({...inputs, otto: {...inputs.otto, r: v}})} />
+                                        <Input label="Inlet Temp (T1) [K]" value={inputs.otto.t1} onChange={v => setInputs({...inputs, otto: {...inputs.otto, t1: v}})} />
+                                        <Input label="Max Temp (T3) [K]" value={inputs.otto.t3} onChange={v => setInputs({...inputs, otto: {...inputs.otto, t3: v}})} />
+                                    </>}
+                                    {tab === 'rankine' && <>
+                                        <Input label="Boiler P (kPa)" value={inputs.rankine.pHigh} onChange={v => setInputs({...inputs, rankine: {...inputs.rankine, pHigh: v}})} />
+                                        <Input label="Condenser P (kPa)" value={inputs.rankine.pLow} onChange={v => setInputs({...inputs, rankine: {...inputs.rankine, pLow: v}})} />
+                                        <Input label="Turbine T (°C)" value={inputs.rankine.tHigh} onChange={v => setInputs({...inputs, rankine: {...inputs.rankine, tHigh: v}})} />
+                                    </>}
+                                    {tab === 'hx' && <>
+                                        <Input label="Hot In (°C)" value={inputs.hx.th1} onChange={v => setInputs({...inputs, hx: {...inputs.hx, th1: v}})} />
+                                        <Input label="Cold In (°C)" value={inputs.hx.tc1} onChange={v => setInputs({...inputs, hx: {...inputs.hx, tc1: v}})} />
+                                        <Input label="Flow (kg/s)" value={inputs.hx.flowH} onChange={v => setInputs({...inputs, hx: {...inputs.hx, flowH: v}})} />
+                                    </>}
+                                    {tab === 'refrigeration' && <>
+                                        <Input label="Evap P (kPa)" value={inputs.refrigeration.pEvap} onChange={v => setInputs({...inputs, refrigeration: {...inputs.refrigeration, pEvap: v}})} />
+                                        <Input label="Cond P (kPa)" value={inputs.refrigeration.pCond} onChange={v => setInputs({...inputs, refrigeration: {...inputs.refrigeration, pCond: v}})} />
+                                    </>}
+                                    {tab === 'conduction' && <>
+                                        <Input label="Conductivity (k)" value={inputs.conduction.k} onChange={v => setInputs({...inputs, conduction: {...inputs.conduction, k: v}})} />
+                                        <Input label="Thickness (L)" value={inputs.conduction.l} onChange={v => setInputs({...inputs, conduction: {...inputs.conduction, l: v}})} />
+                                        <Input label="Hot Side (°C)" value={inputs.conduction.t1} onChange={v => setInputs({...inputs, conduction: {...inputs.conduction, t1: v}})} />
+                                    </>}
+                                    <button onClick={onRun} className="btn-execute w-full py-5 rounded-2xl font-black text-white uppercase tracking-widest text-xs shadow-lg shadow-pink-900/20">Initialize Cycle</button>
+                                </div>
+                            </div>
+                            
+                            <div className="glass p-8 rounded-[32px] border border-purple-500/20 ai-glow">
+                                <h4 className="text-[10px] font-black uppercase text-purple-400 mb-6 tracking-widest flex items-center gap-2">
+                                    <span>✨</span> AI Engineering Hub
+                                </h4>
+                                <div className="grid grid-cols-1 gap-3 mb-6">
+                                    <button onClick={() => triggerAI('optimize')} disabled={!results || aiLoading} className="text-left px-4 py-3 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-30 ai-button-glow">✨ Suggest Optimization</button>
+                                    <button onClick={() => triggerAI('analyze_graph')} disabled={!results?.path || aiLoading} className="text-left px-4 py-3 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/20 text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-30">✨ Analyze P-V Curve</button>
+                                    <button onClick={() => triggerAI('suggest_materials')} disabled={!results || aiLoading} className="text-left px-4 py-3 rounded-xl bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/20 text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-30">✨ Material Intelligence</button>
+                                </div>
+                                {aiLoading && <div className="flex items-center gap-3 py-2"><div className="w-3 h-3 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin"></div><span className="text-[10px] font-bold text-slate-500 animate-pulse">Consulting Gemini AI...</span></div>}
+                                {aiText && <div className="text-[11px] mono text-indigo-200 leading-relaxed italic mt-4 p-4 bg-black/30 rounded-xl border border-white/5 animate-in fade-in duration-500">{aiText}</div>}
+                            </div>
+                        </div>
+
+                        <div className="col-span-12 xl:col-span-8 space-y-8">
+                            {results ? <div className="space-y-8 animate-in fade-in zoom-in-95 duration-500">
+                                <div className="grid grid-cols-2 gap-6">
+                                    {metrics.map((m, idx) => (
+                                        <MetricCard key={idx} label={m.label} value={m.value} unit={m.unit} color={m.color} />
+                                    ))}
+                                </div>
+                                {results.path && (
+                                    <div className="glass rounded-[32px] p-10 border border-white/5 shadow-2xl h-[450px] relative">
+                                        <h4 className="text-xs font-black uppercase text-slate-500 mb-8 tracking-[0.2em]">P-V Path Visualization (Isentropic)</h4>
+                                        <CycleChart data={results.path} />
+                                    </div>
+                                )}
+                                {results.states && (
+                                    <div className="glass rounded-[32px] p-8 border border-white/5">
+                                        <h4 className="text-xs font-black uppercase text-slate-500 mb-6 tracking-widest">Calculated Nodal Vector</h4>
+                                        <div className="grid grid-cols-4 gap-4 text-center">
+                                            {results.states.map(s => (
+                                                <div key={s.id} className="p-4 rounded-2xl bg-white/5 border border-white/5">
+                                                    <p className="text-[9px] font-black text-indigo-400 mb-1">STATE {s.id}</p>
+                                                    <p className="text-xs mono font-bold">{s.T.toFixed(1)} K</p>
+                                                    <p className="text-[10px] text-slate-500">{s.P.toFixed(1)} kPa</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div> : <div className="h-[600px] border-2 border-dashed border-slate-800 rounded-[48px] flex items-center justify-center text-slate-700 font-black tracking-widest uppercase text-xs">Initialize Simulation to Load AI Diagnostics</div>}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+            const AdminView = ({ logs }) => (
+                <div className="flex-1 overflow-y-auto p-10 bg-[#020617]"><div className="max-w-7xl mx-auto">
+                    <h2 className="text-4xl font-black tracking-tighter mb-10">CORE LOGS</h2>
+                    <div className="glass rounded-3xl overflow-hidden border border-white/5"><table className="w-full text-left">
+                        <thead className="bg-slate-900/80 text-[10px] uppercase font-black text-slate-500"><tr><th className="px-8 py-6">UID</th><th className="px-8 py-6">Module</th><th className="px-8 py-6 text-right">Result</th><th className="px-8 py-6 text-right">Time</th></tr></thead>
+                        <tbody className="divide-y divide-white/5">{logs.map(log => (
+                            <tr key={log.id} className="hover:bg-white/5 transition"><td className="px-8 py-6 mono text-[10px] text-indigo-300">{log.uid.substring(0,12)}...</td><td className="px-8 py-6 font-black uppercase text-[10px]">{log.module}</td><td className="px-8 py-6 text-right font-black text-pink-500">{(log.efficiency || 0).toFixed(2)}</td><td className="px-8 py-6 text-right text-[10px] text-slate-500">{log.timestamp ? new Date(log.timestamp.seconds * 1000).toLocaleTimeString() : '...'}</td></tr>
+                        ))}</tbody>
+                    </table></div>
+                </div></div>
+            );
+
+        const MetricCard = ({ label, value, unit, color }) => {
+            const displayValue = typeof value === 'number' ? value.toFixed(2) : '0.00';
+            return (
+                <div className="glass p-8 rounded-[32px] border-t border-white/5 shadow-2xl relative overflow-hidden group">
+                    <div className="absolute top-0 left-0 w-1 h-full bg-indigo-600 opacity-20"></div>
+                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3">{label}</p>
+                    <p className={`text-4xl font-black tracking-tighter ${color}`}>{displayValue}<span className="text-xs ml-2 opacity-30 font-bold uppercase">{unit}</span></p>
+                </div>
+            );
+        };
+
+        const Input = ({ label, value, onChange, unit }) => (
+            <div>
+                <div className="flex justify-between items-center mb-2 px-1">
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">{label}</label>
+                    {unit && <span className="text-[9px] font-black text-indigo-400 opacity-50 uppercase tracking-widest">{unit}</span>}
+                </div>
+                <input type="number" value={value} onChange={e => onChange(parseFloat(e.target.value))} className="input-field w-full px-6 py-4 rounded-[20px] text-indigo-300 mono font-bold text-lg" />
+            </div>
+        );
+
+        const CycleChart = ({ data }) => {
+            const ref = useRef(null); const inst = useRef(null);
+            useEffect(() => {
+                if (!ref.current || !data) return; if (inst.current) inst.current.destroy();
+                const ctx = ref.current.getContext('2d');
+                inst.current = new Chart(ctx, {
+                    type: 'line', data: { datasets: [{ label: 'P-V Path', data: data, borderColor: '#ec4899', backgroundColor: 'rgba(236, 72, 153, 0.1)', fill: true, tension: 0.15, pointRadius: 0, borderWidth: 5 }] },
+                    options: { responsive: true, maintainAspectRatio: false, scales: { x: { type: 'linear', grid: { color: 'rgba(255,255,255,0.02)' }, ticks: { color: '#475569' } }, y: { grid: { color: 'rgba(255,255,255,0.02)' }, ticks: { color: '#475569' } } }, plugins: { legend: { display: false } } }
+                });
+                return () => inst.current?.destroy();
+            }, [data]);
+            return <canvas ref={ref}></canvas>;
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root')); root.render(<App />);
+    </script>
+</body>
+</html>
+
